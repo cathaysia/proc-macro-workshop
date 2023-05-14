@@ -18,6 +18,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut field_ast = quote!();
     let mut field_init = quote!();
     let mut field_setter = quote!();
+    let mut field_cond = quote!();
+    let mut field_res = quote!();
 
     for (_, f) in fields.fields.iter().enumerate() {
         let (field_id, field_ty) = (&f.ident, &f.ty);
@@ -35,6 +37,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self.#field_id = Some(#field_id);
                     self
                 }
+            });
+            field_cond.extend(quote! {
+                if self.#field_id.is_none() {
+                    // let err = format!("{} field missing", &stringify!(#ident));
+                    return Result::Err(String::new().into());
+                }
+            });
+            field_res.extend(quote! {
+                #field_id: self.#field_id.clone().unwrap(),
             });
         }
     }
@@ -55,17 +66,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         impl #builder_ident {
             #field_setter
+
+
+            pub fn build(&mut self) -> Result<#struct_ident, Box<dyn std::error::Error>> {
+                #field_cond
+
+                Ok(#struct_ident{
+                    #field_res
+                })
+            }
         }
     };
-    // res.extend(quote! {
-    //     impl #ident -> Self {
-    //         pub fn builder() -> Self {
-    //             Self {
-    //
-    //             }
-    //         }
-    //     }
-    // });
 
     res.into()
 }
