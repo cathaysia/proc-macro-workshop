@@ -17,6 +17,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let mut field_ast = quote!();
     let mut field_init = quote!();
+    let mut field_setter = quote!();
 
     for (_, f) in fields.fields.iter().enumerate() {
         let (field_id, field_ty) = (&f.ident, &f.ty);
@@ -28,6 +29,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
             });
             field_init.extend(quote! {
                 #field_id: None,
+            });
+            field_setter.extend(quote! {
+                fn #field_id(&mut self, #field_id: #field_ty) ->&mut Self{
+                    self.#field_id = Some(#field_id);
+                    self
+                }
             });
         }
     }
@@ -43,6 +50,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     #field_init
                 }
             }
+
+        }
+
+        impl #builder_ident {
+            #field_setter
         }
     };
     // res.extend(quote! {
