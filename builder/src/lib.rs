@@ -2,6 +2,25 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{self, spanned::Spanned};
 
+fn get_option_type(ty: &syn::Type) -> Option<&syn::Type> {
+    if let syn::Type::Path(syn::TypePath { ref path, .. }) = ty {
+        if let Some(seg) = path.segments.last() {
+            if seg.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                    ref args,
+                    ..
+                }) = seg.arguments
+                {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.first() {
+                        return Some(inner_ty);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let st = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -26,27 +45,48 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         if field_id.is_none() {
         } else {
-            field_ast.extend(quote! {
-                pub #field_id: Option<#field_ty>,
-            });
-            field_init.extend(quote! {
-                #field_id: None,
-            });
-            field_setter.extend(quote! {
-                fn #field_id(&mut self, #field_id: #field_ty) ->&mut Self{
-                    self.#field_id = Some(#field_id);
-                    self
+            match get_option_type(field_ty) {
+                Some(ty) => {
+                    field_ast.extend(quote! {
+                        pub #field_id: Option<#ty>,
+                    });
+                    field_init.extend(quote! {
+                        #field_id: None,
+                    });
+                    field_setter.extend(quote! {
+                        fn #field_id(&mut self, #field_id: #ty) ->&mut Self{
+                            self.#field_id = Some(#field_id);
+                            self
+                        }
+                    });
+                    field_res.extend(quote! {
+                        #field_id: Some(self.#field_id.clone().unwrap()),
+                    });
                 }
-            });
-            field_cond.extend(quote! {
-                if self.#field_id.is_none() {
-                    // let err = format!("{} field missing", &stringify!(#ident));
-                    return Result::Err(String::new().into());
+                None => {
+                    field_ast.extend(quote! {
+                        pub #field_id: Option<#field_ty>,
+                    });
+                    field_init.extend(quote! {
+                        #field_id: None,
+                    });
+                    field_setter.extend(quote! {
+                        fn #field_id(&mut self, #field_id: #field_ty) ->&mut Self{
+                            self.#field_id = Some(#field_id);
+                            self
+                        }
+                    });
+                    field_cond.extend(quote! {
+                        if self.#field_id.is_none() {
+                            // let err = format!("{} field missing", &stringify!(#ident));
+                            return Result::Err(String::new().into());
+                        }
+                    });
+                    field_res.extend(quote! {
+                        #field_id: self.#field_id.clone().unwrap(),
+                    });
                 }
-            });
-            field_res.extend(quote! {
-                #field_id: self.#field_id.clone().unwrap(),
-            });
+            }
         }
     }
 
