@@ -54,7 +54,7 @@ fn get_inside_type(ty: &syn::Type) -> Option<&syn::Ident> {
 
 // #[builder(each = "arg")]
 // 返回 arg
-fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
+fn get_user_specified_ident_for_vec(field: &syn::Field) -> syn::Result<Option<syn::Ident>> {
     for attr in &field.attrs {
         if !attr.path().is_ident("builder") {
             continue;
@@ -62,19 +62,35 @@ fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
 
         if let Meta::List(MetaList { tokens, .. }) = &attr.meta {
             let val = tokens.to_string();
-            match val.split('=').last() {
+            let mut val = val.split('=');
+            match val.next() {
+                Some(v) => {
+                    let v = v.trim();
+                    if v != "each" {
+                        if let syn::Meta::List(ref list) = attr.meta {
+                            return Err(syn::Error::new_spanned(
+                                list,
+                                r#"expected `builder(each = "...")`"#,
+                            ));
+                        }
+                    }
+                }
+                None => {}
+            }
+
+            match val.last() {
                 Some(val) => {
                     let b = val.replace("\"", "");
                     let b = b.trim();
-                    return Some(syn::Ident::new(&b, tokens.span()));
+                    return Ok(Some(syn::Ident::new(&b, tokens.span())));
                 }
                 None => {
-                    return None;
+                    return Ok(None);
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -98,7 +114,12 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     for (_, f) in fields.fields.iter().enumerate() {
         let (field_id, field_ty) = (&f.ident, &f.ty);
-        let vec_type_ident = get_user_specified_ident_for_vec(f);
+        let vec_type_ident = match get_user_specified_ident_for_vec(f) {
+            Ok(v) => v,
+            Err(err) => {
+                return err.to_compile_error().into();
+            }
+        };
         let field_id = match field_id {
             Some(v) => v,
             None => {
