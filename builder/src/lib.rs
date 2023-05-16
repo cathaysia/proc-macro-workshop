@@ -1,6 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{self, spanned::Spanned};
+use syn::{
+    self, spanned::Spanned, AngleBracketedGenericArguments, GenericArgument, Meta, MetaList, Path,
+    PathSegment, TypePath,
+};
 
 fn get_option_type(ty: &syn::Type) -> Option<&syn::Type> {
     if let syn::Type::Path(syn::TypePath { ref path, .. }) = ty {
@@ -21,7 +24,60 @@ fn get_option_type(ty: &syn::Type) -> Option<&syn::Type> {
     None
 }
 
-#[proc_macro_derive(Builder)]
+// Vec<String>
+// 返回 String
+fn get_inside_type(ty: &syn::Type) -> Option<&syn::Ident> {
+    if let syn::Type::Path(syn::TypePath { ref path, .. }) = ty {
+        for seg in &path.segments {
+            if seg.ident.to_string() != "Vec" {
+                continue;
+            }
+            if let syn::PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                ref args,
+                ..
+            }) = &seg.arguments
+            {
+                if let GenericArgument::Type(syn::Type::Path(TypePath {
+                    path: Path { segments, .. },
+                    ..
+                })) = args.last().unwrap()
+                {
+                    if let PathSegment { ref ident, .. } = segments.first().unwrap() {
+                        return Some(&ident);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// #[builder(each = "arg")]
+// 返回 arg
+fn get_user_specified_ident_for_vec(field: &syn::Field) -> Option<syn::Ident> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("builder") {
+            continue;
+        }
+
+        if let Meta::List(MetaList { tokens, .. }) = &attr.meta {
+            let val = tokens.to_string();
+            match val.split('=').last() {
+                Some(val) => {
+                    let b = val.replace("\"", "");
+                    let b = b.trim();
+                    return Some(syn::Ident::new(&b, tokens.span()));
+                }
+                None => {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let st = syn::parse_macro_input!(input as syn::DeriveInput);
 
@@ -42,49 +98,85 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     for (_, f) in fields.fields.iter().enumerate() {
         let (field_id, field_ty) = (&f.ident, &f.ty);
+        let vec_type_ident = get_user_specified_ident_for_vec(f);
+        let field_id = match field_id {
+            Some(v) => v,
+            None => {
+                return Default::default();
+            }
+        };
+        let inside = get_inside_type(field_ty);
 
-        if field_id.is_none() {
-        } else {
-            match get_option_type(field_ty) {
-                Some(ty) => {
-                    field_ast.extend(quote! {
-                        pub #field_id: Option<#ty>,
-                    });
-                    field_init.extend(quote! {
-                        #field_id: None,
-                    });
-                    field_setter.extend(quote! {
-                        fn #field_id(&mut self, #field_id: #ty) ->&mut Self{
-                            self.#field_id = Some(#field_id);
-                            self
+        match get_option_type(field_ty) {
+            Some(ty) => {
+                field_ast.extend(quote! {
+                    pub #field_id: Option<#ty>,
+                });
+                field_init.extend(quote! {
+                    #field_id: None,
+                });
+
+                field_setter.extend(quote! {
+                    fn #field_id(&mut self, #field_id: #ty) ->&mut Self{
+                        self.#field_id = Some(#field_id);
+                        self
+                    }
+                });
+
+                field_res.extend(quote! {
+                    #field_id:self.#field_id.clone(),
+                });
+            }
+            None => {
+                // 不是 Option
+                field_ast.extend(quote! {
+                    pub #field_id: #field_ty,
+                });
+                field_init.extend(quote! {
+                    #field_id: Default::default(),
+                });
+                match vec_type_ident {
+                    Some(ident) => {
+                        let b = inside.unwrap();
+                        if ident.to_string() != field_id.to_string() {
+                            field_setter.extend(quote! {
+                                fn #ident(&mut self, #field_id: #b) ->&mut Self{
+                                    self.#field_id.push(#field_id);
+                                    self
+                                }
+                            });
+                        } else {
+                            field_setter.extend(quote! {
+                                fn #field_id(&mut self, #field_id: #b) ->&mut Self{
+                                    self.#field_id.push(#field_id);
+                                    self
+                                }
+                            });
                         }
-                    });
-                    field_res.extend(quote! {
-                        #field_id: Some(self.#field_id.clone().unwrap()),
-                    });
-                }
-                None => {
-                    field_ast.extend(quote! {
-                        pub #field_id: Option<#field_ty>,
-                    });
-                    field_init.extend(quote! {
-                        #field_id: None,
-                    });
-                    field_setter.extend(quote! {
-                        fn #field_id(&mut self, #field_id: #field_ty) ->&mut Self{
-                            self.#field_id = Some(#field_id);
-                            self
+                        let errmsg = format!("{} field is missing!", field_id.to_string());
+                        if let None = inside {
+                            field_cond.extend(quote! {
+                                if self.#field_id.is_none() {
+                                    return Result::Err(String::from(#errmsg).into());
+                                }
+                            });
                         }
-                    });
-                    field_cond.extend(quote! {
-                        if self.#field_id.is_none() {
-                            // let err = format!("{} field missing", &stringify!(#ident));
-                            return Result::Err(String::new().into());
-                        }
-                    });
-                    field_res.extend(quote! {
-                        #field_id: self.#field_id.clone().unwrap(),
-                    });
+                        field_res.extend(quote! {
+                            #field_id: self.#field_id.clone(),
+                        });
+                    }
+                    // 没有 vec 注释
+                    None => {
+                        field_setter.extend(quote! {
+                            fn #field_id(&mut self, #field_id: #field_ty) ->&mut Self{
+                                self.#field_id =#field_id;
+                                self
+                            }
+                        });
+                        field_res.extend(quote! {
+                            #field_id: self.#field_id.clone(),
+                        });
+                    }
                 }
             }
         }
