@@ -178,7 +178,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         if let None = inside {
                             field_cond.extend(quote! {
                                 if self.#field_id.is_none() {
-                                    return Result::Err(String::from(#errmsg).into());
+                                    return std::result::Result::Err(String::from(#errmsg).into());
                                 }
                             });
                         }
@@ -221,7 +221,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #field_setter
 
 
-            pub fn build(&mut self) -> Result<#struct_ident, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#struct_ident, std::boxed::Box<dyn std::error::Error>> {
                 #field_cond
 
                 Ok(#struct_ident{
